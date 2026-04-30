@@ -66,7 +66,7 @@ interface Realized { date: string; name: string; qty: number; profit: number; yi
 type TabKey = "overview" | "stocks" | "realestate" | "savings" | "realized" | "goal";
 const TABS: { key: TabKey; label: string; num: string; icon: string }[] = [
   { key: "overview", label: "자산 요약", num: "1", icon: "📊" },
-  { key: "stocks", label: "보유 주식/현금", num: "2", icon: "💳" }, // 이름 변경
+  { key: "stocks", label: "보유 주식/현금", num: "2", icon: "💳" },
   { key: "realestate", label: "실물/부채", num: "3", icon: "🏠" },
   { key: "savings", label: "예적금", num: "4", icon: "🏦" },
   { key: "realized", label: "실현 손익", num: "5", icon: "💰" },
@@ -114,39 +114,28 @@ export default function MomAssetMaster() {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [savings, setSavings] = useState<Saving[]>([]);
   
-  // 목표 집 상태 및 수정 기능
   const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
   const [isSavingGoal, setIsSavingGoal] = useState(false);
 
-  // 1. 목표가 클라우드 저장 로직
   const saveGoalToCloud = async (newGoal: typeof propertyGoal) => {
     setIsSavingGoal(true);
     try {
       await fetch(`${KV_URL}/set/mom_property_goal`, { 
-        method: 'POST', 
-        headers: { Authorization: `Bearer ${KV_TOKEN}` }, 
-        body: JSON.stringify(newGoal) 
+        method: 'POST', headers: { Authorization: `Bearer ${KV_TOKEN}` }, body: JSON.stringify(newGoal) 
       });
       setSyncStatusMsg("목표 저장 완료!");
       setTimeout(() => setSyncStatusMsg("REFRESH"), 2000);
     } catch (e) {
-      console.error(e);
       setSyncStatusMsg("목표 저장 실패");
     } finally {
       setIsSavingGoal(false);
     }
   };
 
-  // 목표가 입력 핸들러 (입력 즉시 상태 변경 후 1초 뒤 클라우드 저장)
   const handleGoalChange = (field: 'name' | 'price', val: string) => {
     const newGoal = { ...propertyGoal, [field]: field === 'price' ? cleanNum(val) : val };
     setPropertyGoal(newGoal);
-    
-    // 너무 자주 서버에 저장되지 않도록 디바운스(Debounce) 적용
-    const timerId = setTimeout(() => {
-        saveGoalToCloud(newGoal);
-    }, 1000);
-    // TODO: 원래는 이전 timerId를 취소해야 하지만 심플하게 구성
+    const timerId = setTimeout(() => { saveGoalToCloud(newGoal); }, 1000);
   };
 
   const fetchAllData = useCallback(async () => {
@@ -157,7 +146,7 @@ export default function MomAssetMaster() {
         const kvRes = await fetchWithTimeout(`${KV_URL}/get/mom_property_goal`, 5000);
         const kvData = await kvRes.json();
         if (kvData.result) setPropertyGoal(typeof kvData.result === 'string' ? JSON.parse(kvData.result) : kvData.result);
-      } catch (e) { console.warn("목표가 로드 실패 - 기본값 사용"); }
+      } catch (e) { console.warn("목표가 로드 실패"); }
 
       setSyncStatusMsg("환율 서버 통신 중...");
       let currentRate = 1350;
@@ -188,7 +177,7 @@ export default function MomAssetMaster() {
       setStocks(sRows.map(row => { 
         const c = safeParseRow(row); 
         return { market: c[0]||"", account: c[1]||"", name: c[2]||"", avg: cleanNum(c[5]), current: cleanNum(c[6]), qty: cleanNum(c[7]), dailyChange: cleanNum(c[8]) }; 
-      }).filter(s => s.qty > 0)); // 수량 1개 이상이면 무조건 파싱 (예수금도 1개로 입력할 것)
+      }).filter(s => s.qty > 0)); 
       
       setRealized(rRows.map(row => { const c = safeParseRow(row); return { date: c[0]||"", name: c[1]||"", qty: cleanNum(c[2]), profit: cleanNum(c[3]), yieldRate: cleanNum(c[4]), note: c[5]||"" }; }));
       setAssets(aRows.map((row, i) => { const c = safeParseRow(row); return { id: i, name: c[0]||"", value: cleanNum(c[1]) }; }));
@@ -198,7 +187,6 @@ export default function MomAssetMaster() {
       setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
       setSyncStatusMsg("REFRESH"); 
     } catch (e) {
-      console.error("데이터 동기화 에러:", e);
       setSyncStatusMsg("통신 실패! 다시 클릭");
     } finally {
       setLoading(false);
@@ -212,22 +200,22 @@ export default function MomAssetMaster() {
 
   // Calculations
   const grouped = useMemo(() => {
-    const acc: Record<string, { items: Stock[]; total: number; profit: number; dailyProfit: number }> = {};
+    const acc: Record<string, { items: Stock[]; total: number; stockTotal: number; profit: number; dailyProfit: number }> = {};
     if (!stocks.length) return acc;
     stocks.forEach((s) => {
       if (!s.market) return;
       
-      // 예수금 예외 처리 (환율 무시, 수익률 계산 무시)
       const isCash = s.name.includes("예수금") || s.name.includes("현금");
       const isOS = s.market.includes("해외") && !isCash; 
       const rate = isOS ? exchangeRate : 1;
       
-      if (!acc[s.account]) acc[s.account] = { items: [], total: 0, profit: 0, dailyProfit: 0 };
+      if (!acc[s.account]) acc[s.account] = { items: [], total: 0, stockTotal: 0, profit: 0, dailyProfit: 0 };
       
       acc[s.account].items.push(s);
-      acc[s.account].total += s.current * rate * s.qty; // 예수금은 현재가 그대로 더함
+      acc[s.account].total += s.current * rate * s.qty; // 예수금 포함 총액
       
       if (!isCash) {
+          acc[s.account].stockTotal += s.current * rate * s.qty; // 예수금 제외 (수익률 계산용)
           acc[s.account].profit += (s.current - s.avg) * rate * s.qty;
           acc[s.account].dailyProfit += s.dailyChange * rate * s.qty;
       }
@@ -235,7 +223,6 @@ export default function MomAssetMaster() {
     return acc;
   }, [stocks, exchangeRate]);
 
-  // 자산 계산 시 예수금 포함
   const totalStockVal = useMemo(() => stocks.reduce((a, b) => {
       const isCash = b.name.includes("예수금") || b.name.includes("현금");
       const rate = (b.market?.includes("해외") && !isCash) ? exchangeRate : 1;
@@ -249,6 +236,18 @@ export default function MomAssetMaster() {
 
   const goalGap = propertyGoal.price - netWorth;
   const goalProgress = Math.min(100, Math.max(0, (netWorth / propertyGoal.price) * 100)) || 0;
+
+  // 💥 실현손익 연간 요약용 데이터 
+  const yearlyRealized = useMemo(() => {
+    const acc: Record<string, number> = {};
+    realized.forEach(r => {
+        if (!r.date) return;
+        const year = r.date.substring(0, 4);
+        if (!acc[year]) acc[year] = 0;
+        acc[year] += r.profit;
+    });
+    return acc;
+  }, [realized]);
 
   const realizedGrouped = useMemo(() => {
     const sorted = [...realized].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -291,6 +290,7 @@ export default function MomAssetMaster() {
           ))}
         </nav>
 
+        {/* 탭 1: 요약 */}
         {activeTab === "overview" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             <div className="bg-gradient-to-br from-rose-900/40 via-slate-900 to-slate-900 p-8 md:p-12 rounded-[40px] border border-rose-500/20 shadow-2xl">
@@ -319,52 +319,67 @@ export default function MomAssetMaster() {
           </div>
         )}
 
+        {/* 탭 2: 보유 주식 (수익률 추가 업데이트) */}
         {activeTab === "stocks" && (
           <div className="space-y-6 animate-in fade-in duration-500">
-            {Object.keys(grouped).map((acc) => (
-              <Card key={acc} className="overflow-hidden">
-                <div className="px-6 py-5 bg-slate-800/40 border-b border-slate-800 flex justify-between items-center">
-                  <span className="font-black text-white italic text-lg tracking-tight">💳 {acc}</span>
-                  <div className="text-right">
-                    <div className="text-white font-black text-xl">{fmt(grouped[acc].total)}원</div>
-                    <div className={`text-[10px] font-bold ${pctColor(grouped[acc].dailyProfit)}`}>오늘 {pctSign(grouped[acc].dailyProfit)}{fmt(grouped[acc].dailyProfit)}원</div>
+            {Object.keys(grouped).map((acc) => {
+              const invested = grouped[acc].stockTotal - grouped[acc].profit;
+              const totalRate = invested > 0 ? (grouped[acc].profit / invested) * 100 : 0;
+              return (
+                <Card key={acc} className="overflow-hidden">
+                  <div className="px-6 py-5 bg-slate-800/40 border-b border-slate-800 flex justify-between items-center">
+                    <span className="font-black text-white italic text-lg tracking-tight">💳 {acc}</span>
+                    <div className="text-right">
+                      <div className="text-white font-black text-xl">{fmt(grouped[acc].total)}원</div>
+                      <div className="flex gap-2 text-[10px] font-bold justify-end mt-1">
+                        <span className={pctColor(grouped[acc].dailyProfit)}>오늘 {pctSign(grouped[acc].dailyProfit)}{fmt(grouped[acc].dailyProfit)}원</span>
+                        <span className="text-slate-500">|</span>
+                        <span className={pctColor(grouped[acc].profit)}>누적 {pctSign(grouped[acc].profit)}{fmt(grouped[acc].profit)}원 ({totalRate.toFixed(1)}%)</span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <table className="w-full text-left text-sm">
-                  <tbody className="divide-y divide-slate-800/60">
-                    {grouped[acc].items.map((s, i) => {
-                      const isCash = s.name.includes("예수금") || s.name.includes("현금");
-                      return (
-                        <tr key={i} className="hover:bg-white/[0.02]">
-                          <td className="px-6 py-4 font-bold text-slate-200">
-                            {isCash ? (
-                                <span className="text-[10px] text-emerald-400 mr-2 uppercase">CASH</span>
-                            ) : (
-                                <span className="text-[10px] text-rose-400 mr-2 uppercase">{s.market.includes("해외") ? "US" : "KR"}</span>
-                            )}
-                            {s.name}
-                            {!isCash && <div className="text-[10px] text-slate-600 mt-1">{s.qty}주 · 평단 {s.market.includes("해외") ? `$${s.avg}` : fmt(s.avg)}</div>}
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            {isCash ? (
-                                <div className="font-black text-white">{fmt(s.current)}원</div>
-                            ) : (
-                                <>
-                                    <div className={`font-black ${pctColor(s.dailyChange)}`}>{pctSign(s.dailyChange)}{fmt(s.dailyChange * (s.market.includes("해외") ? exchangeRate : 1) * s.qty)}원</div>
-                                    <div className="text-[10px] opacity-60">수익률 {((s.current/s.avg - 1)*100).toFixed(1)}%</div>
-                                </>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </Card>
-            ))}
+                  <table className="w-full text-left text-sm">
+                    <tbody className="divide-y divide-slate-800/60">
+                      {grouped[acc].items.map((s, i) => {
+                        const isCash = s.name.includes("예수금") || s.name.includes("현금");
+                        const rate = (s.market?.includes("해외") && !isCash) ? exchangeRate : 1;
+                        const dailyAmt = s.dailyChange * rate * s.qty;
+                        const profitAmt = (s.current - s.avg) * rate * s.qty;
+                        const profitPct = s.avg > 0 ? ((s.current / s.avg) - 1) * 100 : 0;
+                        
+                        return (
+                          <tr key={i} className="hover:bg-white/[0.02]">
+                            <td className="px-6 py-4 font-bold text-slate-200">
+                              {isCash ? (
+                                  <span className="text-[10px] text-emerald-400 mr-2 uppercase">CASH</span>
+                              ) : (
+                                  <span className="text-[10px] text-rose-400 mr-2 uppercase">{s.market.includes("해외") ? "US" : "KR"}</span>
+                              )}
+                              {s.name}
+                              {!isCash && <div className="text-[10px] text-slate-600 mt-1">{s.qty}주 · 평단 {s.market.includes("해외") ? `$${s.avg}` : fmt(s.avg)}</div>}
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              {isCash ? (
+                                  <div className="font-black text-white">{fmt(s.current)}원</div>
+                              ) : (
+                                  <>
+                                      <div className={`font-black ${pctColor(dailyAmt)}`}>오늘 {pctSign(dailyAmt)}{fmt(dailyAmt)}원</div>
+                                      <div className={`text-[10px] opacity-80 mt-1 font-bold ${pctColor(profitAmt)}`}>수익 {pctSign(profitAmt)}{fmt(profitAmt)}원 ({profitPct.toFixed(1)}%)</div>
+                                  </>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </Card>
+              );
+            })}
           </div>
         )}
 
+        {/* 탭 3: 실물/부채 */}
         {activeTab === "realestate" && (
            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-500">
              <Card className="p-8"><h3 className="text-xl font-black text-white italic mb-6">🏠 Real Assets</h3>
@@ -376,6 +391,7 @@ export default function MomAssetMaster() {
            </div>
         )}
 
+        {/* 탭 4: 예적금 */}
         {activeTab === "savings" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             {savings.map((s) => {
@@ -405,8 +421,21 @@ export default function MomAssetMaster() {
           </div>
         )}
 
+        {/* 탭 5: 실현 손익 (연간 합계 추가) */}
         {activeTab === "realized" && (
           <div className="space-y-6 animate-in fade-in duration-500">
+            {/* 연간 누적 손익 요약 카드 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+              {Object.keys(yearlyRealized).sort((a, b) => Number(b) - Number(a)).map(year => (
+                <Card key={year} className="p-6 bg-gradient-to-br from-indigo-950/40 to-slate-900 border-indigo-900/30">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">📅 {year}년 누적 실현손익</p>
+                  <p className={`text-3xl font-black tracking-tight ${yearlyRealized[year] >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {pctSign(yearlyRealized[year])}{fmt(yearlyRealized[year])}원
+                  </p>
+                </Card>
+              ))}
+            </div>
+
             {Object.keys(realizedGrouped).map((m) => (
               <Card key={m} className="overflow-hidden">
                 <div className="px-6 py-4 bg-slate-800/40 flex justify-between items-center border-b border-slate-800">
@@ -429,6 +458,7 @@ export default function MomAssetMaster() {
           </div>
         )}
 
+        {/* 탭 6: 내 집 마련 */}
         {activeTab === "goal" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             <Card className="p-8 md:p-12 border-rose-900/30">
@@ -470,7 +500,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.1 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.2 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
