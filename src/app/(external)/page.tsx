@@ -9,8 +9,6 @@ import {
 // ═══════════════════════════════════════════
 // ☁️ Config
 // ═══════════════════════════════════════════
-const KV_URL = "https://chief-jay-84148.upstash.io"; 
-const KV_TOKEN = "gQAAAAAAAUi0AAIncDE5MmI4ZmFkNGQwN2E0NTNmYjAwY2ExNGQ1YzI1MTI3OHAxODQxNDg";
 const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSL3Ps1zpYTsWkrh8Wv6s9RQfRM1Fg-XVEbJGJGeaIG2Xmoz7yzFoBGie0fzU4aeX8eTswp5z4_3je5/pub?";
 
 const GIDS = { STOCKS: "0", REALIZED: "817751922", ASSETS: "1398634207", DEBTS: "359303564", SAVINGS: "380349145" };
@@ -56,7 +54,6 @@ const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
   }
 };
 
-// Types
 interface Stock { market: string; account: string; name: string; qty: number; avg: number; current: number; dailyChange: number; }
 interface Asset { id: number; name: string; value: number; }
 interface Debt { id: number; name: string; value: number; }
@@ -114,40 +111,12 @@ export default function MomAssetMaster() {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [savings, setSavings] = useState<Saving[]>([]);
   
-  const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
-  const [isSavingGoal, setIsSavingGoal] = useState(false);
-
-  const saveGoalToCloud = async (newGoal: typeof propertyGoal) => {
-    setIsSavingGoal(true);
-    try {
-      await fetch(`${KV_URL}/set/mom_property_goal`, { 
-        method: 'POST', headers: { Authorization: `Bearer ${KV_TOKEN}` }, body: JSON.stringify(newGoal) 
-      });
-      setSyncStatusMsg("목표 저장 완료!");
-      setTimeout(() => setSyncStatusMsg("REFRESH"), 2000);
-    } catch (e) {
-      setSyncStatusMsg("목표 저장 실패");
-    } finally {
-      setIsSavingGoal(false);
-    }
-  };
-
-  const handleGoalChange = (field: 'name' | 'price', val: string) => {
-    const newGoal = { ...propertyGoal, [field]: field === 'price' ? cleanNum(val) : val };
-    setPropertyGoal(newGoal);
-    const timerId = setTimeout(() => { saveGoalToCloud(newGoal); }, 1000);
-  };
+  // 🎯 목표 하드코딩 (웹 저장 방식 완전 제거)
+  const propertyGoal = { name: "여의도 미성 47평", price: 3100000000 };
 
   const fetchAllData = useCallback(async () => {
     setLoading(true);
     try {
-      setSyncStatusMsg("목표가 확인 중...");
-      try {
-        const kvRes = await fetchWithTimeout(`${KV_URL}/get/mom_property_goal`, 5000);
-        const kvData = await kvRes.json();
-        if (kvData.result) setPropertyGoal(typeof kvData.result === 'string' ? JSON.parse(kvData.result) : kvData.result);
-      } catch (e) { console.warn("목표가 로드 실패"); }
-
       setSyncStatusMsg("환율 서버 통신 중...");
       let currentRate = 1350;
       try {
@@ -198,13 +167,11 @@ export default function MomAssetMaster() {
     fetchAllData();
   }, [fetchAllData]);
 
-  // Calculations
   const grouped = useMemo(() => {
     const acc: Record<string, { items: Stock[]; total: number; stockTotal: number; profit: number; dailyProfit: number }> = {};
     if (!stocks.length) return acc;
     stocks.forEach((s) => {
       if (!s.market) return;
-      
       const isCash = s.name.includes("예수금") || s.name.includes("현금");
       const isOS = s.market.includes("해외") && !isCash; 
       const rate = isOS ? exchangeRate : 1;
@@ -212,10 +179,10 @@ export default function MomAssetMaster() {
       if (!acc[s.account]) acc[s.account] = { items: [], total: 0, stockTotal: 0, profit: 0, dailyProfit: 0 };
       
       acc[s.account].items.push(s);
-      acc[s.account].total += s.current * rate * s.qty; // 예수금 포함 총액
+      acc[s.account].total += s.current * rate * s.qty; 
       
       if (!isCash) {
-          acc[s.account].stockTotal += s.current * rate * s.qty; // 예수금 제외 (수익률 계산용)
+          acc[s.account].stockTotal += s.current * rate * s.qty; 
           acc[s.account].profit += (s.current - s.avg) * rate * s.qty;
           acc[s.account].dailyProfit += s.dailyChange * rate * s.qty;
       }
@@ -237,7 +204,6 @@ export default function MomAssetMaster() {
   const goalGap = propertyGoal.price - netWorth;
   const goalProgress = Math.min(100, Math.max(0, (netWorth / propertyGoal.price) * 100)) || 0;
 
-  // 💥 실현손익 연간 요약용 데이터 
   const yearlyRealized = useMemo(() => {
     const acc: Record<string, number> = {};
     realized.forEach(r => {
@@ -290,7 +256,6 @@ export default function MomAssetMaster() {
           ))}
         </nav>
 
-        {/* 탭 1: 요약 */}
         {activeTab === "overview" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             <div className="bg-gradient-to-br from-rose-900/40 via-slate-900 to-slate-900 p-8 md:p-12 rounded-[40px] border border-rose-500/20 shadow-2xl">
@@ -319,7 +284,6 @@ export default function MomAssetMaster() {
           </div>
         )}
 
-        {/* 탭 2: 보유 주식 (수익률 추가 업데이트) */}
         {activeTab === "stocks" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             {Object.keys(grouped).map((acc) => {
@@ -379,7 +343,6 @@ export default function MomAssetMaster() {
           </div>
         )}
 
-        {/* 탭 3: 실물/부채 */}
         {activeTab === "realestate" && (
            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-500">
              <Card className="p-8"><h3 className="text-xl font-black text-white italic mb-6">🏠 Real Assets</h3>
@@ -391,7 +354,6 @@ export default function MomAssetMaster() {
            </div>
         )}
 
-        {/* 탭 4: 예적금 */}
         {activeTab === "savings" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             {savings.map((s) => {
@@ -421,10 +383,8 @@ export default function MomAssetMaster() {
           </div>
         )}
 
-        {/* 탭 5: 실현 손익 (연간 합계 추가) */}
         {activeTab === "realized" && (
           <div className="space-y-6 animate-in fade-in duration-500">
-            {/* 연간 누적 손익 요약 카드 */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
               {Object.keys(yearlyRealized).sort((a, b) => Number(b) - Number(a)).map(year => (
                 <Card key={year} className="p-6 bg-gradient-to-br from-indigo-950/40 to-slate-900 border-indigo-900/30">
@@ -458,33 +418,21 @@ export default function MomAssetMaster() {
           </div>
         )}
 
-        {/* 탭 6: 내 집 마련 */}
         {activeTab === "goal" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             <Card className="p-8 md:p-12 border-rose-900/30">
               <h3 className="text-2xl font-black text-white italic mb-8 flex items-center gap-3">
-                🎯 부동산 목표 수정
-                {isSavingGoal && <span className="text-[10px] bg-rose-900 px-2 py-1 rounded text-rose-300 animate-pulse">저장 중...</span>}
+                🎯 부동산 목표 (고정값)
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-4">
                   <div>
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 부동산 이름 (수정 가능)</label>
-                    <input 
-                      type="text" 
-                      value={propertyGoal.name} 
-                      onChange={(e) => handleGoalChange('name', e.target.value)} 
-                      className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700 outline-none focus:border-rose-500 transition-colors" 
-                    />
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 부동산 이름</label>
+                    <div className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700">{propertyGoal.name}</div>
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 가격 (수정 가능)</label>
-                    <input 
-                      type="text" 
-                      value={fmt(propertyGoal.price)} 
-                      onChange={(e) => handleGoalChange('price', e.target.value)} 
-                      className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700 outline-none focus:border-rose-500 transition-colors" 
-                    />
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 가격 (원)</label>
+                    <div className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700">{fmt(propertyGoal.price)}원</div>
                   </div>
                 </div>
                 <div className="bg-rose-500/5 border border-rose-500/20 rounded-[32px] p-8 flex flex-col justify-center">
@@ -500,7 +448,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.2 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.4 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
