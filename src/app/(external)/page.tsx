@@ -221,8 +221,8 @@ export default function MomAssetMaster() {
                   <p className="text-slate-500 text-sm mt-2 font-mono">약 {fmtShort(netWorth)}원</p>
                 </div>
                 <div className="text-right bg-white/5 p-6 rounded-3xl border border-white/10 backdrop-blur">
-                  <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2">🎯 Goal: {propertyGoal.여의도 미성 32평}</p>
-                  <p className="text-2xl font-black text-white">{fmtShort(propertyGoal.3020000000)}원</p>
+                  <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2">🎯 Goal: {propertyGoal.name}</p>
+                  <p className="text-2xl font-black text-white">{fmtShort(propertyGoal.price)}원</p>
                   <div className="w-full bg-slate-800 h-2 rounded-full mt-4 overflow-hidden">
                     <div className="bg-rose-500 h-full transition-all duration-1000" style={{ width: `${goalProgress}%` }} />
                   </div>
