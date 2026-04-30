@@ -7,11 +7,12 @@ import {
 } from "recharts";
 
 // ═══════════════════════════════════════════
-// ☁️ Config (경원님이 주신 어머님 시트 정보 반영 완료!)
+// ☁️ Config (어머님 시트 주소 확인 필수!)
 // ═══════════════════════════════════════════
 const KV_URL = "https://chief-jay-84148.upstash.io"; 
 const KV_TOKEN = "gQAAAAAAAUi0AAIncDE5MmI4ZmFkNGQwN2E0NTNmYjAwY2ExNGQ1YzI1MTI3OHAxODQxNDg";
 
+// [주의] 이 URL을 어머님 시트의 '웹에 게시' 링크로 반드시 교체하세요!
 const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSL3Ps1zpYTsWkrh8Wv6s9RQfRM1Fg-XVEbJGJGeaIG2Xmoz7yzFoBGie0fzU4aeX8eTswp5z4_3je5/pub?";
 
 const GIDS = {
@@ -22,7 +23,32 @@ const GIDS = {
   SAVINGS: "380349145",
 };
 
-// Types
+// ─────────────── 유틸리티 함수 (컴포넌트 밖으로 이동) ───────────────
+const cleanNum = (val: unknown): number => {
+  if (val == null || val === "") return 0;
+  const cleaned = String(val).replace(/[^0-9.\-]+/g, "");
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? 0 : n;
+};
+
+const fmt = (num: number): string => Math.round(num).toLocaleString("ko-KR");
+
+const fmtShort = (n: number): string => {
+  const abs = Math.abs(n);
+  if (abs >= 1e8) return (n / 1e8).toFixed(1) + "억";
+  if (abs >= 1e4) return Math.round(n / 1e4).toLocaleString("ko-KR") + "만";
+  return fmt(n);
+};
+
+const fetchCSV = async (gid: string) => {
+  try {
+    const res = await fetch(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`);
+    const text = await res.text();
+    return text.split("\n").map(r => r.trim()).filter(Boolean).slice(1);
+  } catch { return []; }
+};
+// ─────────────────────────────────────────────────────────────
+
 interface Stock { market: string; account: string; name: string; qty: number; avg: number; current: number; dailyChange: number; }
 interface Asset { id: number; name: string; value: number; }
 interface Debt { id: number; name: string; value: number; }
@@ -40,33 +66,9 @@ const TABS: { key: TabKey; label: string; num: string; icon: string }[] = [
   { key: "goal", label: "내 집 마련", num: "6", icon: "🎯" },
 ];
 
-const ACCOUNT_COLORS = ["#6366f1", "#f59e0b", "#10b981", "#ec4899", "#06b6d4", "#8b5cf6", "#ef4444", "#f97316"];
-
-// Utilities
-const cleanNum = (val: unknown): number => {
-  if (val == null || val === "") return 0;
-  const cleaned = String(val).replace(/[^0-9.\-]+/g, "");
-  const n = parseFloat(cleaned);
-  return isNaN(n) ? 0 : n;
-};
-
-const fmt = (num: number): string => Math.round(num).toLocaleString("ko-KR");
-const fmtDecimal = (num: number): string => {
-  if (!num) return "0";
-  return num.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
-};
-
-const fmtShort = (n: number): string => {
-  const abs = Math.abs(n);
-  if (abs >= 1e8) return (n / 1e8).toFixed(1) + "억";
-  if (abs >= 1e4) return Math.round(n / 1e4).toLocaleString("ko-KR") + "만";
-  return fmt(n);
-};
-
 const pctColor = (v: number) => (v >= 0 ? "text-rose-400" : "text-blue-400");
 const pctSign = (v: number) => (v >= 0 ? "+" : "");
 
-// Components
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`bg-slate-900/80 backdrop-blur rounded-[28px] border border-slate-800/80 shadow-xl ${className}`}>{children}</div>;
 }
@@ -102,8 +104,6 @@ export default function MomAssetMaster() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [savings, setSavings] = useState<Saving[]>([]);
-
-  // 🏠 부동산 목표 상태 (Cloud 연동)
   const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
 
   useEffect(() => {
@@ -118,43 +118,34 @@ export default function MomAssetMaster() {
     loadGoalData();
   }, []);
 
-  const saveGoalToCloud = async (newGoal: typeof propertyGoal) => {
-    try { await fetch(`${KV_URL}/set/mom_property_goal`, { method: 'POST', headers: { Authorization: `Bearer ${KV_TOKEN}` }, body: JSON.stringify(newGoal) }); }
-    catch (e) { console.error(e); }
-  };
-
-  const handleGoalChange = (field: 'name' | 'price', val: string) => {
-    const newGoal = { ...propertyGoal, [field]: field === 'price' ? cleanNum(val) : val };
-    setPropertyGoal(newGoal);
-    saveGoalToCloud(newGoal);
-  };
-
-  const fetchCSV = async (gid: string) => {
-    try {
-      const res = await fetch(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`);
-      const text = await res.text();
-      return text.split("\n").map(r => r.trim()).filter(Boolean).slice(1);
-    } catch { return []; }
-  };
-
   const fetchAllData = useCallback(async () => {
     try {
       setLoading(true);
       const rateRes = await fetch("https://open.er-api.com/v6/latest/USD");
       if (rateRes.ok) { const data = await rateRes.json(); if (data?.rates?.KRW) setExchangeRate(data.rates.KRW); }
-      const [sRows, rRows, aRows, dRows, svRows] = await Promise.all([fetchCSV(GIDS.STOCKS), fetchCSV(GIDS.REALIZED), fetchCSV(GIDS.ASSETS), fetchCSV(GIDS.DEBTS), fetchCSV(GIDS.SAVINGS)]);
+      
+      const [sRows, rRows, aRows, dRows, svRows] = await Promise.all([
+        fetchCSV(GIDS.STOCKS), fetchCSV(GIDS.REALIZED), fetchCSV(GIDS.ASSETS), fetchCSV(GIDS.DEBTS), fetchCSV(GIDS.SAVINGS)
+      ]);
+
       const parseRow = (row: string) => row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((v) => v.replace(/"/g, "").trim());
+      
       setStocks(sRows.map(row => { const c = parseRow(row); return { market: c[0], account: c[1], name: c[2], avg: cleanNum(c[5]), current: cleanNum(c[6]), qty: cleanNum(c[7]), dailyChange: cleanNum(c[8]) }; }).filter(s => s.qty > 0));
       setRealized(rRows.map(row => { const c = parseRow(row); return { date: c[0], name: c[1], qty: cleanNum(c[2]), profit: cleanNum(c[3]), yieldRate: cleanNum(c[4]), note: c[5] }; }));
       setAssets(aRows.map((row, i) => { const c = parseRow(row); return { id: i, name: c[0], value: cleanNum(c[1]) }; }));
       setDebts(dRows.map((row, i) => { const c = parseRow(row); return { id: i, name: c[0], value: cleanNum(c[1]) }; }));
       setSavings(svRows.map((row, i) => { const c = parseRow(row); return { id: i, name: c[0], monthly: cleanNum(c[1]), current: cleanNum(c[2]), maturityDate: c[3], transferDay: cleanNum(c[4]), interestRate: cleanNum(c[5]) }; }));
+      
       setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
       setLoading(false);
     } catch (e) { setLoading(false); }
-  }, [fetchCSV]);
+  }, []);
 
-  useEffect(() => { fetchAllData(); const timer = setInterval(fetchAllData, 60000); return () => clearInterval(timer); }, [fetchAllData]);
+  useEffect(() => { 
+    fetchAllData(); 
+    const timer = setInterval(fetchAllData, 120000); // 2분마다 동기화
+    return () => clearInterval(timer); 
+  }, [fetchAllData]);
 
   const grouped = useMemo(() => {
     const acc: Record<string, { items: Stock[]; total: number; profit: number; dailyProfit: number }> = {};
@@ -346,11 +337,11 @@ export default function MomAssetMaster() {
                 <div className="space-y-4">
                   <div>
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 부동산 이름</label>
-                    <input type="text" value={propertyGoal.name} onChange={(e) => handleGoalChange('name', e.target.value)} className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700 outline-none focus:border-rose-500 transition-colors" />
+                    <input type="text" value={propertyGoal.name} disabled className="w-full bg-slate-950 text-slate-500 font-bold p-4 rounded-2xl border border-slate-800 outline-none" />
                   </div>
                   <div>
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 가격 (원)</label>
-                    <input type="text" value={fmt(propertyGoal.price)} onChange={(e) => handleGoalChange('price', e.target.value)} className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700 outline-none focus:border-rose-500 transition-colors" />
+                    <input type="text" value={fmt(propertyGoal.price)} disabled className="w-full bg-slate-950 text-slate-500 font-bold p-4 rounded-2xl border border-slate-800 outline-none" />
                   </div>
                 </div>
                 <div className="bg-rose-500/5 border border-rose-500/20 rounded-[32px] p-8 flex flex-col justify-center">
@@ -366,7 +357,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.0 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.1 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
