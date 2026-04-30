@@ -1,18 +1,13 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import {
-  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
-  BarChart, Bar, XAxis, YAxis
-} from "recharts";
 
 // ═══════════════════════════════════════════
-// ☁️ [절대 안전구역] 모든 설정값과 도구를 컴포넌트 밖으로 유배
+// ☁️ Config (환경 설정)
 // ═══════════════════════════════════════════
 const KV_URL = "https://chief-jay-84148.upstash.io"; 
 const KV_TOKEN = "gQAAAAAAAUi0AAIncDE5MmI4ZmFkNGQwN2E0NTNmYjAwY2ExNGQ1YzI1MTI3OHAxODQxNDg";
 
-// 어머님 시트 주소 반영 완료
 const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSL3Ps1zpYTsWkrh8Wv6s9RQfRM1Fg-XVEbJGJGeaIG2Xmoz7yzFoBGie0fzU4aeX8eTswp5z4_3je5/pub?";
 
 const GIDS = {
@@ -23,8 +18,7 @@ const GIDS = {
   SAVINGS: "380349145",
 };
 
-const ACCOUNT_COLORS = ["#6366f1", "#f59e0b", "#10b981", "#ec4899", "#06b6d4", "#8b5cf6", "#ef4444", "#f97316"];
-
+// ─────────────── 안전한 유틸리티 함수 (방탄 패치) ───────────────
 const cleanNum = (val: unknown): number => {
   if (val == null || val === "") return 0;
   const cleaned = String(val).replace(/[^0-9.\-]+/g, "");
@@ -33,7 +27,6 @@ const cleanNum = (val: unknown): number => {
 };
 
 const fmt = (num: number): string => Math.round(num).toLocaleString("ko-KR");
-
 const fmtShort = (n: number): string => {
   const abs = Math.abs(n);
   if (abs >= 1e8) return (n / 1e8).toFixed(1) + "억";
@@ -41,11 +34,37 @@ const fmtShort = (n: number): string => {
   return fmt(n);
 };
 
-// 배달 도구(fetchCSV)를 컴포넌트 밖으로 완전히 빼서 재생성 방지
+// [방탄 패치 1] 정규식 병목 현상을 막는 안전한 CSV 파서
+const safeParseRow = (row: string) => {
+  const result = [];
+  let insideQuotes = false;
+  let currentVal = "";
+  for (let i = 0; i < row.length; i++) {
+    const char = row[i];
+    if (char === '"') {
+      insideQuotes = !insideQuotes;
+    } else if (char === ',' && !insideQuotes) {
+      result.push(currentVal.replace(/"/g, "").trim());
+      currentVal = "";
+    } else {
+      currentVal += char;
+    }
+  }
+  result.push(currentVal.replace(/"/g, "").trim());
+  return result;
+};
+
+// [방탄 패치 2] 에러 페이지(HTML) 유입 원천 차단 로직
 const fetchCSV = async (gid: string) => {
   try {
-    const res = await fetch(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`);
+    const res = await fetch(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) return [];
     const text = await res.text();
+    // 구글에서 과도한 요청으로 HTML 에러 페이지를 반환하면 파싱 중단
+    if (text.trim().startsWith("<") || text.includes("<!DOCTYPE")) {
+      console.warn(`GID ${gid}: 데이터 로드 지연 (HTML 반환됨)`);
+      return [];
+    }
     return text.split("\n").map(r => r.trim()).filter(Boolean).slice(1);
   } catch { return []; }
 };
@@ -111,76 +130,82 @@ export default function MomAssetMaster() {
   const [savings, setSavings] = useState<Saving[]>([]);
   const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
 
-  // 데이터 로드 함수를 useCallback으로 감싸고 의존성을 비움 (함수 불변성 유지)
   const fetchAllData = useCallback(async () => {
     try {
       setLoading(true);
-      const rateRes = await fetch("https://open.er-api.com/v6/latest/USD");
-      if (rateRes.ok) {
-        const data = await rateRes.json();
-        if (data?.rates?.KRW) setExchangeRate(data.rates.KRW);
-      }
       
+      // 환율 로드 (실패해도 앱 멈추지 않도록 예외 처리 강화)
+      let currentRate = 1350;
+      try {
+        const rateRes = await fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" });
+        if (rateRes.ok) {
+          const data = await rateRes.json();
+          if (data?.rates?.KRW) currentRate = data.rates.KRW;
+        }
+      } catch (e) { console.warn("환율 업데이트 지연, 기본값 사용"); }
+      setExchangeRate(currentRate);
+      
+      // 구글 시트 5개 탭 동시 로드
       const [sRows, rRows, aRows, dRows, svRows] = await Promise.all([
         fetchCSV(GIDS.STOCKS), fetchCSV(GIDS.REALIZED), fetchCSV(GIDS.ASSETS), fetchCSV(GIDS.DEBTS), fetchCSV(GIDS.SAVINGS)
       ]);
-
-      const parseRow = (row: string) => row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((v) => v.replace(/"/g, "").trim());
       
       setStocks(sRows.map(row => { 
-        const c = parseRow(row); 
-        return { market: c[0], account: c[1], name: c[2], avg: cleanNum(c[5]), current: cleanNum(c[6]), qty: cleanNum(c[7]), dailyChange: cleanNum(c[8]) }; 
+        const c = safeParseRow(row); 
+        return { market: c[0] || "", account: c[1] || "", name: c[2] || "", avg: cleanNum(c[5]), current: cleanNum(c[6]), qty: cleanNum(c[7]), dailyChange: cleanNum(c[8]) }; 
       }).filter(s => s.qty > 0));
 
       setRealized(rRows.map(row => { 
-        const c = parseRow(row); 
-        return { date: c[0], name: c[1], qty: cleanNum(c[2]), profit: cleanNum(c[3]), yieldRate: cleanNum(c[4]), note: c[5] }; 
+        const c = safeParseRow(row); 
+        return { date: c[0] || "", name: c[1] || "", qty: cleanNum(c[2]), profit: cleanNum(c[3]), yieldRate: cleanNum(c[4]), note: c[5] || "" }; 
       }));
 
       setAssets(aRows.map((row, i) => { 
-        const c = parseRow(row); 
-        return { id: i, name: c[0], value: cleanNum(c[1]) }; 
+        const c = safeParseRow(row); 
+        return { id: i, name: c[0] || "", value: cleanNum(c[1]) }; 
       }));
 
       setDebts(dRows.map((row, i) => { 
-        const c = parseRow(row); 
-        return { id: i, name: c[0], value: cleanNum(c[1]) }; 
+        const c = safeParseRow(row); 
+        return { id: i, name: c[0] || "", value: cleanNum(c[1]) }; 
       }));
 
       setSavings(svRows.map((row, i) => { 
-        const c = parseRow(row); 
-        return { id: i, name: c[0], monthly: cleanNum(c[1]), current: cleanNum(c[2]), maturityDate: c[3], transferDay: cleanNum(c[4]), interestRate: cleanNum(c[5]) }; 
+        const c = safeParseRow(row); 
+        return { id: i, name: c[0] || "", monthly: cleanNum(c[1]), current: cleanNum(c[2]), maturityDate: c[3] || "", transferDay: cleanNum(c[4]), interestRate: cleanNum(c[5]) }; 
       }));
       
       setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
     } catch (e) {
-      console.error(e);
+      console.error("데이터 동기화 에러:", e);
     } finally {
       setLoading(false); 
     }
   }, []);
 
-  // 1. 초기 1회 로드 (브라우저 진입 시)
+  // 1. 컴포넌트 최초 마운트 시에만 실행 (무한 루프 방지)
   useEffect(() => {
     setIsClient(true);
     
-    // 목표가 데이터 로드
     const loadGoalData = async () => {
       try {
         const res = await fetch(`${KV_URL}/get/mom_property_goal`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
         const data = await res.json();
         if (data.result) setPropertyGoal(typeof data.result === 'string' ? JSON.parse(data.result) : data.result);
-      } catch (e) { console.error(e); }
+      } catch (e) { console.warn("목표가 로드 실패"); }
     };
 
     loadGoalData();
     fetchAllData();
-  }, [fetchAllData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Calculations (useMemo로 묶어서 불필요한 계산 방지)
+  // 계산 로직 (에러가 나도 앱이 죽지 않도록 방어 코드 추가)
   const grouped = useMemo(() => {
     const acc: Record<string, { items: Stock[]; total: number; profit: number; dailyProfit: number }> = {};
+    if (!stocks.length) return acc;
     stocks.forEach((s) => {
+      if (!s.market) return;
       const isOS = s.market.includes("해외"); const rate = isOS ? exchangeRate : 1;
       if (!acc[s.account]) acc[s.account] = { items: [], total: 0, profit: 0, dailyProfit: 0 };
       acc[s.account].items.push(s);
@@ -191,19 +216,25 @@ export default function MomAssetMaster() {
     return acc;
   }, [stocks, exchangeRate]);
 
-  const totalStockVal = useMemo(() => stocks.reduce((a, b) => a + b.current * (b.market.includes("해외") ? exchangeRate : 1) * b.qty, 0), [stocks, exchangeRate]);
-  const totalAssetsVal = assets.reduce((a, b) => a + b.value, 0);
-  const totalSavingsVal = savings.reduce((a, b) => a + b.current, 0);
-  const totalDebtsVal = debts.reduce((a, b) => a + b.value, 0);
+  const totalStockVal = useMemo(() => stocks.reduce((a, b) => a + b.current * (b.market?.includes("해외") ? exchangeRate : 1) * b.qty, 0), [stocks, exchangeRate]);
+  const totalAssetsVal = useMemo(() => assets.reduce((a, b) => a + b.value, 0), [assets]);
+  const totalSavingsVal = useMemo(() => savings.reduce((a, b) => a + b.current, 0), [savings]);
+  const totalDebtsVal = useMemo(() => debts.reduce((a, b) => a + b.value, 0), [debts]);
   const netWorth = totalStockVal + totalAssetsVal + totalSavingsVal - totalDebtsVal;
 
   const goalGap = propertyGoal.price - netWorth;
-  const goalProgress = Math.min(100, Math.max(0, (netWorth / propertyGoal.price) * 100));
+  const goalProgress = Math.min(100, Math.max(0, (netWorth / propertyGoal.price) * 100)) || 0;
 
   const realizedGrouped = useMemo(() => {
     const sorted = [...realized].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     const acc: Record<string, { items: Realized[]; sub: number }> = {};
-    sorted.forEach((r) => { const m = r.date.substring(0, 7); if (!acc[m]) acc[m] = { items: [], sub: 0 }; acc[m].items.push(r); acc[m].sub += r.profit; });
+    sorted.forEach((r) => { 
+      if (!r.date) return;
+      const m = r.date.substring(0, 7); 
+      if (!acc[m]) acc[m] = { items: [], sub: 0 }; 
+      acc[m].items.push(r); 
+      acc[m].sub += r.profit; 
+    });
     return acc;
   }, [realized]);
 
@@ -222,7 +253,7 @@ export default function MomAssetMaster() {
             <h1 className="text-4xl font-black text-white italic tracking-tighter">MOM'S ASSET <span className="text-rose-500">MASTER</span></h1>
             <p className="text-slate-500 text-[10px] font-bold tracking-[0.3em] uppercase mt-1">FOR OUR DEAREST MOTHER · {lastUpdated}</p>
           </div>
-          <button onClick={() => fetchAllData()} className="text-[10px] px-4 py-2 rounded-xl font-bold bg-slate-800 text-slate-300 flex items-center gap-2">
+          <button onClick={() => fetchAllData()} disabled={loading} className="text-[10px] px-4 py-2 rounded-xl font-bold bg-slate-800 text-slate-300 flex items-center gap-2 transition-all hover:bg-slate-700 disabled:opacity-50">
             <span className={loading ? "animate-spin" : ""}>↻</span> {loading ? "SYNCING..." : "REFRESH"}
           </button>
         </header>
@@ -347,7 +378,7 @@ export default function MomAssetMaster() {
                   <tbody className="divide-y divide-slate-800/60">
                     {realizedGrouped[m].items.map((r, i) => (
                       <tr key={i} className="hover:bg-white/[0.02]">
-                        <td className="px-6 py-4 text-xs font-mono text-slate-500">{r.date.substring(5)}</td>
+                        <td className="px-6 py-4 text-xs font-mono text-slate-500">{r.date?.substring(5)}</td>
                         <td className="px-6 py-4 font-bold">{r.name}</td>
                         <td className={`px-6 py-4 text-right font-black ${r.profit >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{pctSign(r.profit)}{fmt(r.profit)}원</td>
                       </tr>
@@ -387,7 +418,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.3 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.4 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
