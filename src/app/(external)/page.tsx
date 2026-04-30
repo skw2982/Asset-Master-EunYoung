@@ -1,21 +1,19 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
+  BarChart, Bar, XAxis, YAxis
+} from "recharts";
 
 // ═══════════════════════════════════════════
-// ☁️ Config (어머님 시트 주소 완벽 적용)
+// ☁️ Config (환경 설정)
 // ═══════════════════════════════════════════
 const KV_URL = "https://chief-jay-84148.upstash.io"; 
 const KV_TOKEN = "gQAAAAAAAUi0AAIncDE5MmI4ZmFkNGQwN2E0NTNmYjAwY2ExNGQ1YzI1MTI3OHAxODQxNDg";
 const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSL3Ps1zpYTsWkrh8Wv6s9RQfRM1Fg-XVEbJGJGeaIG2Xmoz7yzFoBGie0fzU4aeX8eTswp5z4_3je5/pub?";
 
-const GIDS = {
-  STOCKS: "0",
-  REALIZED: "817751922",
-  ASSETS: "1398634207",
-  DEBTS: "359303564",
-  SAVINGS: "380349145",
-};
+const GIDS = { STOCKS: "0", REALIZED: "817751922", ASSETS: "1398634207", DEBTS: "359303564", SAVINGS: "380349145" };
 
 // ─────────────── 안전한 데이터 정제 도구 ───────────────
 const cleanNum = (val: unknown): number => {
@@ -32,19 +30,32 @@ const fmtShort = (n: number): string => {
   return fmt(n);
 };
 
-// 정규식 오류 방지 파서
 const safeParseRow = (row: string) => {
   const result = [];
   let insideQuotes = false;
   let currentVal = "";
   for (let i = 0; i < row.length; i++) {
     const char = row[i];
-    if (char === '"') { insideQuotes = !insideQuotes; } 
-    else if (char === ',' && !insideQuotes) { result.push(currentVal.replace(/"/g, "").trim()); currentVal = ""; } 
-    else { currentVal += char; }
+    if (char === '"') insideQuotes = !insideQuotes;
+    else if (char === ',' && !insideQuotes) { result.push(currentVal.replace(/"/g, "").trim()); currentVal = ""; }
+    else currentVal += char;
   }
   result.push(currentVal.replace(/"/g, "").trim());
   return result;
+};
+
+// 💥 [핵심 방어 코드] 8초 안에 대답 안 하면 통신을 강제로 죽이는 함수
+const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    clearTimeout(id);
+    return res;
+  } catch (err) {
+    clearTimeout(id);
+    throw err; // 무한 로딩 방지용 에러 던지기
+  }
 };
 
 // Types
@@ -55,7 +66,6 @@ interface Saving { id: number; name: string; monthly: number; current: number; m
 interface Realized { date: string; name: string; qty: number; profit: number; yieldRate: number; note: string; }
 
 type TabKey = "overview" | "stocks" | "realestate" | "savings" | "realized" | "goal";
-
 const TABS: { key: TabKey; label: string; num: string; icon: string }[] = [
   { key: "overview", label: "자산 요약", num: "1", icon: "📊" },
   { key: "stocks", label: "보유 주식", num: "2", icon: "💳" },
@@ -97,7 +107,9 @@ function StatCard({ label, value, sub, variant = "default", icon }: { label: str
 export default function MomAssetMaster() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [isClient, setIsClient] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // 처음부터 무한로딩 도는 현상 방지
+  const [syncStatusMsg, setSyncStatusMsg] = useState("SYNC DATA"); // 실시간 상태 중계기
+  
   const [lastUpdated, setLastUpdated] = useState("");
   const [exchangeRate, setExchangeRate] = useState(1350);
 
@@ -108,32 +120,35 @@ export default function MomAssetMaster() {
   const [savings, setSavings] = useState<Saving[]>([]);
   const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
 
-  // 공통 데이터 패치 함수
-  const fetchAllData = async () => {
+  // 데이터 로드 메인 함수 (에러 추적기 탑재)
+  const fetchAllData = useCallback(async () => {
     setLoading(true);
     try {
       // 1. 목표가 로드
+      setSyncStatusMsg("목표가 확인 중...");
       try {
-        const kvRes = await fetch(`${KV_URL}/get/mom_property_goal`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
+        const kvRes = await fetchWithTimeout(`${KV_URL}/get/mom_property_goal`, 5000);
         const kvData = await kvRes.json();
         if (kvData.result) setPropertyGoal(typeof kvData.result === 'string' ? JSON.parse(kvData.result) : kvData.result);
-      } catch (e) { console.warn("KV 에러 무시"); }
+      } catch (e) { console.warn("목표가 로드 실패 - 기본값 사용"); }
 
       // 2. 환율 로드
+      setSyncStatusMsg("환율 서버 통신 중...");
       let currentRate = 1350;
       try {
-        const rateRes = await fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" });
+        const rateRes = await fetchWithTimeout("https://open.er-api.com/v6/latest/USD", 5000);
         if (rateRes.ok) {
           const rData = await rateRes.json();
           if (rData?.rates?.KRW) currentRate = rData.rates.KRW;
         }
-      } catch (e) { console.warn("환율 에러 무시"); }
+      } catch (e) { console.warn("환율 서버 무응답 - 기본값 1350 적용"); }
       setExchangeRate(currentRate);
 
-      // 3. 구글 시트 로드
+      // 3. 구글 시트 로드 (여기서 8초 초과 시 강제 차단)
+      setSyncStatusMsg("구글 시트 연동 중...");
       const fetchCSV = async (gid: string) => {
         try {
-          const res = await fetch(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`, { cache: "no-store" });
+          const res = await fetchWithTimeout(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`, 8000);
           if (!res.ok) return [];
           const text = await res.text();
           if (text.trim().startsWith("<")) return [];
@@ -152,24 +167,20 @@ export default function MomAssetMaster() {
       setSavings(svRows.map((row, i) => { const c = safeParseRow(row); return { id: i, name: c[0]||"", monthly: cleanNum(c[1]), current: cleanNum(c[2]), maturityDate: c[3]||"", transferDay: cleanNum(c[4]), interestRate: cleanNum(c[5]) }; }));
       
       setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
+      setSyncStatusMsg("REFRESH"); // 정상 완료
     } catch (e) {
-      console.error("데이터 통신 에러", e);
+      console.error("데이터 동기화 완전 실패:", e);
+      setSyncStatusMsg("통신 실패! 다시 클릭"); // 에러 발생 시 버튼 텍스트 변경
     } finally {
-      setLoading(false);
+      setLoading(false); // 무조건 로딩 상태 해제
     }
-  };
+  }, []);
 
-  // 💥 무한 루프가 물리적으로 불가능한 단일 실행 구조 💥
+  // 페이지 진입 시 최초 1회만 데이터 로드
   useEffect(() => {
-    let isMounted = true;
     setIsClient(true);
-
-    if (isMounted) {
-      fetchAllData();
-    }
-
-    return () => { isMounted = false; };
-  }, []); // 의존성 배열 완전 비움 = 브라우저 켤 때 단 한 번만 실행
+    fetchAllData();
+  }, [fetchAllData]);
 
   // Calculations
   const grouped = useMemo(() => {
@@ -224,8 +235,9 @@ export default function MomAssetMaster() {
             <h1 className="text-4xl font-black text-white italic tracking-tighter">MOM'S ASSET <span className="text-rose-500">MASTER</span></h1>
             <p className="text-slate-500 text-[10px] font-bold tracking-[0.3em] uppercase mt-1">FOR OUR DEAREST MOTHER · {lastUpdated}</p>
           </div>
-          <button onClick={fetchAllData} disabled={loading} className="text-[10px] px-4 py-2 rounded-xl font-bold bg-slate-800 text-slate-300 flex items-center gap-2 transition-all hover:bg-slate-700 disabled:opacity-50">
-            <span className={loading ? "animate-spin" : ""}>↻</span> {loading ? "SYNCING..." : "REFRESH"}
+          {/* 💥 실시간 상태 중계 버튼 */}
+          <button onClick={fetchAllData} disabled={loading} className={`text-[10px] px-4 py-2 rounded-xl font-bold flex items-center gap-2 transition-all ${loading ? "bg-rose-900 text-rose-300 opacity-80" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
+            <span className={loading ? "animate-spin" : ""}>↻</span> {syncStatusMsg}
           </button>
         </header>
 
@@ -389,7 +401,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.5 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.0 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
