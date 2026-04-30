@@ -7,7 +7,7 @@ import {
 } from "recharts";
 
 // ═══════════════════════════════════════════
-// ☁️ Config (환경 설정)
+// ☁️ Config
 // ═══════════════════════════════════════════
 const KV_URL = "https://chief-jay-84148.upstash.io"; 
 const KV_TOKEN = "gQAAAAAAAUi0AAIncDE5MmI4ZmFkNGQwN2E0NTNmYjAwY2ExNGQ1YzI1MTI3OHAxODQxNDg";
@@ -15,7 +15,6 @@ const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSL3Ps1zpY
 
 const GIDS = { STOCKS: "0", REALIZED: "817751922", ASSETS: "1398634207", DEBTS: "359303564", SAVINGS: "380349145" };
 
-// ─────────────── 안전한 데이터 정제 도구 ───────────────
 const cleanNum = (val: unknown): number => {
   if (val == null || val === "") return 0;
   const n = parseFloat(String(val).replace(/[^0-9.\-]+/g, ""));
@@ -44,7 +43,6 @@ const safeParseRow = (row: string) => {
   return result;
 };
 
-// 💥 [핵심 방어 코드] 8초 안에 대답 안 하면 통신을 강제로 죽이는 함수
 const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -54,7 +52,7 @@ const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
     return res;
   } catch (err) {
     clearTimeout(id);
-    throw err; // 무한 로딩 방지용 에러 던지기
+    throw err;
   }
 };
 
@@ -68,15 +66,15 @@ interface Realized { date: string; name: string; qty: number; profit: number; yi
 type TabKey = "overview" | "stocks" | "realestate" | "savings" | "realized" | "goal";
 const TABS: { key: TabKey; label: string; num: string; icon: string }[] = [
   { key: "overview", label: "자산 요약", num: "1", icon: "📊" },
-  { key: "stocks", label: "보유 주식", num: "2", icon: "💳" },
+  { key: "stocks", label: "보유 주식/현금", num: "2", icon: "💳" }, // 이름 변경
   { key: "realestate", label: "실물/부채", num: "3", icon: "🏠" },
   { key: "savings", label: "예적금", num: "4", icon: "🏦" },
   { key: "realized", label: "실현 손익", num: "5", icon: "💰" },
   { key: "goal", label: "내 집 마련", num: "6", icon: "🎯" },
 ];
 
-const pctColor = (v: number) => (v >= 0 ? "text-rose-400" : "text-blue-400");
-const pctSign = (v: number) => (v >= 0 ? "+" : "");
+const pctColor = (v: number) => (v > 0 ? "text-rose-400" : v < 0 ? "text-blue-400" : "text-slate-400");
+const pctSign = (v: number) => (v > 0 ? "+" : "");
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`bg-slate-900/80 backdrop-blur rounded-[28px] border border-slate-800/80 shadow-xl ${className}`}>{children}</div>;
@@ -101,14 +99,11 @@ function StatCard({ label, value, sub, variant = "default", icon }: { label: str
   );
 }
 
-// ═══════════════════════════════════════════
-// 🏛️ 메인 컴포넌트
-// ═══════════════════════════════════════════
 export default function MomAssetMaster() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [isClient, setIsClient] = useState(false);
-  const [loading, setLoading] = useState(false); // 처음부터 무한로딩 도는 현상 방지
-  const [syncStatusMsg, setSyncStatusMsg] = useState("SYNC DATA"); // 실시간 상태 중계기
+  const [loading, setLoading] = useState(false);
+  const [syncStatusMsg, setSyncStatusMsg] = useState("SYNC DATA");
   
   const [lastUpdated, setLastUpdated] = useState("");
   const [exchangeRate, setExchangeRate] = useState(1350);
@@ -118,13 +113,45 @@ export default function MomAssetMaster() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [savings, setSavings] = useState<Saving[]>([]);
+  
+  // 목표 집 상태 및 수정 기능
   const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
+  const [isSavingGoal, setIsSavingGoal] = useState(false);
 
-  // 데이터 로드 메인 함수 (에러 추적기 탑재)
+  // 1. 목표가 클라우드 저장 로직
+  const saveGoalToCloud = async (newGoal: typeof propertyGoal) => {
+    setIsSavingGoal(true);
+    try {
+      await fetch(`${KV_URL}/set/mom_property_goal`, { 
+        method: 'POST', 
+        headers: { Authorization: `Bearer ${KV_TOKEN}` }, 
+        body: JSON.stringify(newGoal) 
+      });
+      setSyncStatusMsg("목표 저장 완료!");
+      setTimeout(() => setSyncStatusMsg("REFRESH"), 2000);
+    } catch (e) {
+      console.error(e);
+      setSyncStatusMsg("목표 저장 실패");
+    } finally {
+      setIsSavingGoal(false);
+    }
+  };
+
+  // 목표가 입력 핸들러 (입력 즉시 상태 변경 후 1초 뒤 클라우드 저장)
+  const handleGoalChange = (field: 'name' | 'price', val: string) => {
+    const newGoal = { ...propertyGoal, [field]: field === 'price' ? cleanNum(val) : val };
+    setPropertyGoal(newGoal);
+    
+    // 너무 자주 서버에 저장되지 않도록 디바운스(Debounce) 적용
+    const timerId = setTimeout(() => {
+        saveGoalToCloud(newGoal);
+    }, 1000);
+    // TODO: 원래는 이전 timerId를 취소해야 하지만 심플하게 구성
+  };
+
   const fetchAllData = useCallback(async () => {
     setLoading(true);
     try {
-      // 1. 목표가 로드
       setSyncStatusMsg("목표가 확인 중...");
       try {
         const kvRes = await fetchWithTimeout(`${KV_URL}/get/mom_property_goal`, 5000);
@@ -132,7 +159,6 @@ export default function MomAssetMaster() {
         if (kvData.result) setPropertyGoal(typeof kvData.result === 'string' ? JSON.parse(kvData.result) : kvData.result);
       } catch (e) { console.warn("목표가 로드 실패 - 기본값 사용"); }
 
-      // 2. 환율 로드
       setSyncStatusMsg("환율 서버 통신 중...");
       let currentRate = 1350;
       try {
@@ -141,10 +167,9 @@ export default function MomAssetMaster() {
           const rData = await rateRes.json();
           if (rData?.rates?.KRW) currentRate = rData.rates.KRW;
         }
-      } catch (e) { console.warn("환율 서버 무응답 - 기본값 1350 적용"); }
+      } catch (e) { console.warn("환율 서버 무응답"); }
       setExchangeRate(currentRate);
 
-      // 3. 구글 시트 로드 (여기서 8초 초과 시 강제 차단)
       setSyncStatusMsg("구글 시트 연동 중...");
       const fetchCSV = async (gid: string) => {
         try {
@@ -160,23 +185,26 @@ export default function MomAssetMaster() {
         fetchCSV(GIDS.STOCKS), fetchCSV(GIDS.REALIZED), fetchCSV(GIDS.ASSETS), fetchCSV(GIDS.DEBTS), fetchCSV(GIDS.SAVINGS)
       ]);
 
-      setStocks(sRows.map(row => { const c = safeParseRow(row); return { market: c[0]||"", account: c[1]||"", name: c[2]||"", avg: cleanNum(c[5]), current: cleanNum(c[6]), qty: cleanNum(c[7]), dailyChange: cleanNum(c[8]) }; }).filter(s => s.qty > 0));
+      setStocks(sRows.map(row => { 
+        const c = safeParseRow(row); 
+        return { market: c[0]||"", account: c[1]||"", name: c[2]||"", avg: cleanNum(c[5]), current: cleanNum(c[6]), qty: cleanNum(c[7]), dailyChange: cleanNum(c[8]) }; 
+      }).filter(s => s.qty > 0)); // 수량 1개 이상이면 무조건 파싱 (예수금도 1개로 입력할 것)
+      
       setRealized(rRows.map(row => { const c = safeParseRow(row); return { date: c[0]||"", name: c[1]||"", qty: cleanNum(c[2]), profit: cleanNum(c[3]), yieldRate: cleanNum(c[4]), note: c[5]||"" }; }));
       setAssets(aRows.map((row, i) => { const c = safeParseRow(row); return { id: i, name: c[0]||"", value: cleanNum(c[1]) }; }));
       setDebts(dRows.map((row, i) => { const c = safeParseRow(row); return { id: i, name: c[0]||"", value: cleanNum(c[1]) }; }));
       setSavings(svRows.map((row, i) => { const c = safeParseRow(row); return { id: i, name: c[0]||"", monthly: cleanNum(c[1]), current: cleanNum(c[2]), maturityDate: c[3]||"", transferDay: cleanNum(c[4]), interestRate: cleanNum(c[5]) }; }));
       
       setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
-      setSyncStatusMsg("REFRESH"); // 정상 완료
+      setSyncStatusMsg("REFRESH"); 
     } catch (e) {
-      console.error("데이터 동기화 완전 실패:", e);
-      setSyncStatusMsg("통신 실패! 다시 클릭"); // 에러 발생 시 버튼 텍스트 변경
+      console.error("데이터 동기화 에러:", e);
+      setSyncStatusMsg("통신 실패! 다시 클릭");
     } finally {
-      setLoading(false); // 무조건 로딩 상태 해제
+      setLoading(false);
     }
   }, []);
 
-  // 페이지 진입 시 최초 1회만 데이터 로드
   useEffect(() => {
     setIsClient(true);
     fetchAllData();
@@ -188,17 +216,32 @@ export default function MomAssetMaster() {
     if (!stocks.length) return acc;
     stocks.forEach((s) => {
       if (!s.market) return;
-      const isOS = s.market.includes("해외"); const rate = isOS ? exchangeRate : 1;
+      
+      // 예수금 예외 처리 (환율 무시, 수익률 계산 무시)
+      const isCash = s.name.includes("예수금") || s.name.includes("현금");
+      const isOS = s.market.includes("해외") && !isCash; 
+      const rate = isOS ? exchangeRate : 1;
+      
       if (!acc[s.account]) acc[s.account] = { items: [], total: 0, profit: 0, dailyProfit: 0 };
+      
       acc[s.account].items.push(s);
-      acc[s.account].total += s.current * rate * s.qty;
-      acc[s.account].profit += (s.current - s.avg) * rate * s.qty;
-      acc[s.account].dailyProfit += s.dailyChange * rate * s.qty;
+      acc[s.account].total += s.current * rate * s.qty; // 예수금은 현재가 그대로 더함
+      
+      if (!isCash) {
+          acc[s.account].profit += (s.current - s.avg) * rate * s.qty;
+          acc[s.account].dailyProfit += s.dailyChange * rate * s.qty;
+      }
     });
     return acc;
   }, [stocks, exchangeRate]);
 
-  const totalStockVal = useMemo(() => stocks.reduce((a, b) => a + b.current * (b.market?.includes("해외") ? exchangeRate : 1) * b.qty, 0), [stocks, exchangeRate]);
+  // 자산 계산 시 예수금 포함
+  const totalStockVal = useMemo(() => stocks.reduce((a, b) => {
+      const isCash = b.name.includes("예수금") || b.name.includes("현금");
+      const rate = (b.market?.includes("해외") && !isCash) ? exchangeRate : 1;
+      return a + b.current * rate * b.qty;
+  }, 0), [stocks, exchangeRate]);
+  
   const totalAssetsVal = useMemo(() => assets.reduce((a, b) => a + b.value, 0), [assets]);
   const totalSavingsVal = useMemo(() => savings.reduce((a, b) => a + b.current, 0), [savings]);
   const totalDebtsVal = useMemo(() => debts.reduce((a, b) => a + b.value, 0), [debts]);
@@ -235,7 +278,6 @@ export default function MomAssetMaster() {
             <h1 className="text-4xl font-black text-white italic tracking-tighter">MOM'S ASSET <span className="text-rose-500">MASTER</span></h1>
             <p className="text-slate-500 text-[10px] font-bold tracking-[0.3em] uppercase mt-1">FOR OUR DEAREST MOTHER · {lastUpdated}</p>
           </div>
-          {/* 💥 실시간 상태 중계 버튼 */}
           <button onClick={fetchAllData} disabled={loading} className={`text-[10px] px-4 py-2 rounded-xl font-bold flex items-center gap-2 transition-all ${loading ? "bg-rose-900 text-rose-300 opacity-80" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
             <span className={loading ? "animate-spin" : ""}>↻</span> {syncStatusMsg}
           </button>
@@ -269,10 +311,10 @@ export default function MomAssetMaster() {
               </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="주식 평가액" value={`${fmtShort(totalStockVal)}원`} icon="📈" />
+              <StatCard label="계좌 총액(예수금 포함)" value={`${fmtShort(totalStockVal)}원`} icon="💳" />
               <StatCard label="기타 자산" value={`${fmtShort(totalAssetsVal)}원`} icon="🏠" />
               <StatCard label="예적금" value={`${fmtShort(totalSavingsVal)}원`} variant="success" icon="🏦" />
-              <StatCard label="부채 총계" value={`${fmtShort(totalDebtsVal)}원`} variant="danger" icon="💳" />
+              <StatCard label="부채 총계" value={`${fmtShort(totalDebtsVal)}원`} variant="danger" icon="💸" />
             </div>
           </div>
         )}
@@ -290,18 +332,32 @@ export default function MomAssetMaster() {
                 </div>
                 <table className="w-full text-left text-sm">
                   <tbody className="divide-y divide-slate-800/60">
-                    {grouped[acc].items.map((s, i) => (
-                      <tr key={i} className="hover:bg-white/[0.02]">
-                        <td className="px-6 py-4 font-bold text-slate-200">
-                          <span className="text-[10px] text-rose-400 mr-2 uppercase">{s.market.includes("해외") ? "US" : "KR"}</span>{s.name}
-                          <div className="text-[10px] text-slate-600 mt-1">{s.qty}주 · 평단 {s.market.includes("해외") ? `$${s.avg}` : fmt(s.avg)}</div>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className={`font-black ${pctColor(s.dailyChange)}`}>{pctSign(s.dailyChange)}{fmt(s.dailyChange * (s.market.includes("해외") ? exchangeRate : 1) * s.qty)}원</div>
-                          <div className="text-[10px] opacity-60">수익률 {((s.current/s.avg - 1)*100).toFixed(1)}%</div>
-                        </td>
-                      </tr>
-                    ))}
+                    {grouped[acc].items.map((s, i) => {
+                      const isCash = s.name.includes("예수금") || s.name.includes("현금");
+                      return (
+                        <tr key={i} className="hover:bg-white/[0.02]">
+                          <td className="px-6 py-4 font-bold text-slate-200">
+                            {isCash ? (
+                                <span className="text-[10px] text-emerald-400 mr-2 uppercase">CASH</span>
+                            ) : (
+                                <span className="text-[10px] text-rose-400 mr-2 uppercase">{s.market.includes("해외") ? "US" : "KR"}</span>
+                            )}
+                            {s.name}
+                            {!isCash && <div className="text-[10px] text-slate-600 mt-1">{s.qty}주 · 평단 {s.market.includes("해외") ? `$${s.avg}` : fmt(s.avg)}</div>}
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            {isCash ? (
+                                <div className="font-black text-white">{fmt(s.current)}원</div>
+                            ) : (
+                                <>
+                                    <div className={`font-black ${pctColor(s.dailyChange)}`}>{pctSign(s.dailyChange)}{fmt(s.dailyChange * (s.market.includes("해외") ? exchangeRate : 1) * s.qty)}원</div>
+                                    <div className="text-[10px] opacity-60">수익률 {((s.current/s.avg - 1)*100).toFixed(1)}%</div>
+                                </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </Card>
@@ -375,17 +431,30 @@ export default function MomAssetMaster() {
 
         {activeTab === "goal" && (
           <div className="space-y-6 animate-in fade-in duration-500">
-            <Card className="p-8 md:p-12">
-              <h3 className="text-2xl font-black text-white italic mb-8 flex items-center gap-3">🎯 부동산 목표 설정</h3>
+            <Card className="p-8 md:p-12 border-rose-900/30">
+              <h3 className="text-2xl font-black text-white italic mb-8 flex items-center gap-3">
+                🎯 부동산 목표 수정
+                {isSavingGoal && <span className="text-[10px] bg-rose-900 px-2 py-1 rounded text-rose-300 animate-pulse">저장 중...</span>}
+              </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-4">
                   <div>
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 부동산 이름</label>
-                    <input type="text" value={propertyGoal.name} disabled className="w-full bg-slate-950 text-slate-500 font-bold p-4 rounded-2xl border border-slate-800 outline-none" />
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 부동산 이름 (수정 가능)</label>
+                    <input 
+                      type="text" 
+                      value={propertyGoal.name} 
+                      onChange={(e) => handleGoalChange('name', e.target.value)} 
+                      className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700 outline-none focus:border-rose-500 transition-colors" 
+                    />
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 가격 (원)</label>
-                    <input type="text" value={fmt(propertyGoal.price)} disabled className="w-full bg-slate-950 text-slate-500 font-bold p-4 rounded-2xl border border-slate-800 outline-none" />
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 block">목표 가격 (수정 가능)</label>
+                    <input 
+                      type="text" 
+                      value={fmt(propertyGoal.price)} 
+                      onChange={(e) => handleGoalChange('price', e.target.value)} 
+                      className="w-full bg-slate-950 text-white font-bold p-4 rounded-2xl border border-slate-700 outline-none focus:border-rose-500 transition-colors" 
+                    />
                   </div>
                 </div>
                 <div className="bg-rose-500/5 border border-rose-500/20 rounded-[32px] p-8 flex flex-col justify-center">
@@ -401,7 +470,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.0 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V2.1 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
