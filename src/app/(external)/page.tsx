@@ -7,12 +7,12 @@ import {
 } from "recharts";
 
 // ═══════════════════════════════════════════
-// ☁️ Config & Constants (컴포넌트 밖으로 유배)
+// ☁️ [절대 안전구역] 모든 설정값과 도구를 컴포넌트 밖으로 유배
 // ═══════════════════════════════════════════
 const KV_URL = "https://chief-jay-84148.upstash.io"; 
 const KV_TOKEN = "gQAAAAAAAUi0AAIncDE5MmI4ZmFkNGQwN2E0NTNmYjAwY2ExNGQ1YzI1MTI3OHAxODQxNDg";
 
-// 어머님 시트 주소 반영
+// 어머님 시트 주소 반영 완료
 const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSL3Ps1zpYTsWkrh8Wv6s9RQfRM1Fg-XVEbJGJGeaIG2Xmoz7yzFoBGie0fzU4aeX8eTswp5z4_3je5/pub?";
 
 const GIDS = {
@@ -25,7 +25,6 @@ const GIDS = {
 
 const ACCOUNT_COLORS = ["#6366f1", "#f59e0b", "#10b981", "#ec4899", "#06b6d4", "#8b5cf6", "#ef4444", "#f97316"];
 
-// ─────────────── 순수 유틸리티 함수 ───────────────
 const cleanNum = (val: unknown): number => {
   if (val == null || val === "") return 0;
   const cleaned = String(val).replace(/[^0-9.\-]+/g, "");
@@ -42,6 +41,7 @@ const fmtShort = (n: number): string => {
   return fmt(n);
 };
 
+// 배달 도구(fetchCSV)를 컴포넌트 밖으로 완전히 빼서 재생성 방지
 const fetchCSV = async (gid: string) => {
   try {
     const res = await fetch(`${BASE_CSV_URL}gid=${gid}&single=true&output=csv&t=${Date.now()}`);
@@ -71,6 +71,32 @@ const TABS: { key: TabKey; label: string; num: string; icon: string }[] = [
 const pctColor = (v: number) => (v >= 0 ? "text-rose-400" : "text-blue-400");
 const pctSign = (v: number) => (v >= 0 ? "+" : "");
 
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`bg-slate-900/80 backdrop-blur rounded-[28px] border border-slate-800/80 shadow-xl ${className}`}>{children}</div>;
+}
+
+function StatCard({ label, value, sub, variant = "default", icon }: { label: string; value: string; sub?: string; variant?: "default" | "danger" | "success" | "warning"; icon?: string; }) {
+  const styles = {
+    default: "bg-slate-900/80 border-slate-800 text-white",
+    danger: "bg-gradient-to-br from-rose-950/40 to-slate-900 border-rose-900/50 text-rose-300",
+    success: "bg-gradient-to-br from-emerald-950/40 to-slate-900 border-emerald-900/50 text-emerald-300",
+    warning: "bg-gradient-to-br from-amber-950/40 to-slate-900 border-amber-900/50 text-amber-300",
+  };
+  return (
+    <div className={`p-5 rounded-3xl border ${styles[variant]}`}>
+      <div className="flex items-center gap-2 mb-2">
+        {icon && <span className="text-xs opacity-70">{icon}</span>}
+        <p className="text-[10px] font-black uppercase tracking-widest opacity-60">{label}</p>
+      </div>
+      <p className="text-2xl font-black tracking-tight">{value}</p>
+      {sub && <p className="text-xs mt-1 opacity-60 font-medium">{sub}</p>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
+// 🏛️ 메인 컴포넌트 시작
+// ═══════════════════════════════════════════
 export default function MomAssetMaster() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [isClient, setIsClient] = useState(false);
@@ -85,10 +111,7 @@ export default function MomAssetMaster() {
   const [savings, setSavings] = useState<Saving[]>([]);
   const [propertyGoal, setPropertyGoal] = useState({ name: "여의도 미성 47평", price: 2800000000 });
 
-  // 1. 초기 마운트 시 브라우저 환경 확인
-  useEffect(() => { setIsClient(true); }, []);
-
-  // 2. 데이터 호출 로직 (useCallback 의존성 최소화)
+  // 데이터 로드 함수를 useCallback으로 감싸고 의존성을 비움 (함수 불변성 유지)
   const fetchAllData = useCallback(async () => {
     try {
       setLoading(true);
@@ -130,16 +153,18 @@ export default function MomAssetMaster() {
       }));
       
       setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
-      setLoading(false);
-    } catch (e) { 
+    } catch (e) {
       console.error(e);
+    } finally {
       setLoading(false); 
     }
   }, []);
 
-  // 3. 목표 설정 클라우드 로드 (초기 1회)
+  // 1. 초기 1회 로드 (브라우저 진입 시)
   useEffect(() => {
-    if (!isClient) return;
+    setIsClient(true);
+    
+    // 목표가 데이터 로드
     const loadGoalData = async () => {
       try {
         const res = await fetch(`${KV_URL}/get/mom_property_goal`, { headers: { Authorization: `Bearer ${KV_TOKEN}` } });
@@ -147,20 +172,12 @@ export default function MomAssetMaster() {
         if (data.result) setPropertyGoal(typeof data.result === 'string' ? JSON.parse(data.result) : data.result);
       } catch (e) { console.error(e); }
     };
+
     loadGoalData();
-    fetchAllData(); // 데이터 최초 호출
-  }, [isClient, fetchAllData]);
+    fetchAllData();
+  }, [fetchAllData]);
 
-  // 4. 자동 업데이트 인터벌 (useCallback 안 쓰도록 설계)
-  useEffect(() => {
-    if (!isClient) return;
-    const timer = setInterval(() => {
-      fetchAllData();
-    }, 60000 * 5); // 5분마다 한 번씩만!
-    return () => clearInterval(timer);
-  }, [isClient, fetchAllData]);
-
-  // Calculations
+  // Calculations (useMemo로 묶어서 불필요한 계산 방지)
   const grouped = useMemo(() => {
     const acc: Record<string, { items: Stock[]; total: number; profit: number; dailyProfit: number }> = {};
     stocks.forEach((s) => {
@@ -175,7 +192,6 @@ export default function MomAssetMaster() {
   }, [stocks, exchangeRate]);
 
   const totalStockVal = useMemo(() => stocks.reduce((a, b) => a + b.current * (b.market.includes("해외") ? exchangeRate : 1) * b.qty, 0), [stocks, exchangeRate]);
-  const totalDailyProfit = useMemo(() => Object.values(grouped).reduce((a, b) => a + b.dailyProfit, 0), [grouped]);
   const totalAssetsVal = assets.reduce((a, b) => a + b.value, 0);
   const totalSavingsVal = savings.reduce((a, b) => a + b.current, 0);
   const totalDebtsVal = debts.reduce((a, b) => a + b.value, 0);
@@ -206,7 +222,7 @@ export default function MomAssetMaster() {
             <h1 className="text-4xl font-black text-white italic tracking-tighter">MOM'S ASSET <span className="text-rose-500">MASTER</span></h1>
             <p className="text-slate-500 text-[10px] font-bold tracking-[0.3em] uppercase mt-1">FOR OUR DEAREST MOTHER · {lastUpdated}</p>
           </div>
-          <button onClick={() => fetchAllData()} className="text-[10px] px-4 py-2 rounded-xl font-bold bg-slate-800 text-slate-300 flex items-center gap-2 transition-all hover:bg-slate-700">
+          <button onClick={() => fetchAllData()} className="text-[10px] px-4 py-2 rounded-xl font-bold bg-slate-800 text-slate-300 flex items-center gap-2">
             <span className={loading ? "animate-spin" : ""}>↻</span> {loading ? "SYNCING..." : "REFRESH"}
           </button>
         </header>
@@ -219,7 +235,6 @@ export default function MomAssetMaster() {
           ))}
         </nav>
 
-        {/* 탭 1: 요약 */}
         {activeTab === "overview" && (
           <div className="space-y-6 animate-in fade-in duration-500">
             <div className="bg-gradient-to-br from-rose-900/40 via-slate-900 to-slate-900 p-8 md:p-12 rounded-[40px] border border-rose-500/20 shadow-2xl">
@@ -372,7 +387,7 @@ export default function MomAssetMaster() {
         )}
 
         <footer className="mt-20 py-8 border-t border-slate-900 text-center">
-          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.2 · CREATED BY SON</p>
+          <p className="text-slate-800 text-[10px] font-black tracking-widest uppercase italic">MOM'S ASSET MASTER V1.3 · CREATED BY SON</p>
         </footer>
       </div>
     </div>
